@@ -12,9 +12,10 @@ import itertools
 from glob import glob
 import tensorflow as tf
 from six.moves import xrange
+import numpy as np
 
-from ops import *
-from utils import *
+from ops import batch_norm, conv2d, conv2d_transpose, lrelu, linear
+from utils import get_image, save_images
 
 SUPPORTED_EXTENSIONS = ["png", "jpg", "jpeg"]
 
@@ -25,48 +26,40 @@ def dataset_files(root):
 
 
 class DCGAN(object):
-    def __init__(self, sess, image_size=64, is_crop=False,
-                 batch_size=64, sample_size=64, lowres=8,
-                 z_dim=100, gf_dim=64, df_dim=64,
-                 gfc_dim=1024, dfc_dim=1024, c_dim=3,
-                 checkpoint_dir=None, lam=0.1):
-        """
+    def __init__(self,
+                 sess,
+                 image_size,
+                 batch_size=64,
+                 sample_size=64,
+                 lowres=8,
+                 z_dim=100,
+                 gf_dim=64,
+                 df_dim=64,
+                 gfc_dim=1024,
+                 dfc_dim=1024,
+                 c_dim=3,
+                 checkpoint_dir=None,
+                 lamda=0.01):
 
-        Args:
-            sess: TensorFlow session
-            batch_size: The size of batch. Should be specified before training.
-            lowres: (optional) Low resolution image/mask shrink factor. [8]
-            z_dim: (optional) Dimension of dim for Z. [100]
-            gf_dim: (optional) Dimension of gen filters in first conv layer. [64]
-            df_dim: (optional) Dimension of discrim filters in first conv layer. [64]
-            gfc_dim: (optional) Dimension of gen untis for for fully connected layer. [1024]
-            dfc_dim: (optional) Dimension of discrim units for fully connected layer. [1024]
-            c_dim: (optional) Dimension of image color. [3]
-        """
         # Currently, image size must be a (power of 2) and (8 or higher).
         assert(image_size & (image_size - 1) == 0 and image_size >= 8)
 
+        # INIT from train-dcgan!
         self.sess = sess
-        self.is_crop = is_crop
+        self.is_crop = False
         self.batch_size = batch_size
         self.image_size = image_size
         self.sample_size = sample_size
         self.image_shape = [image_size, image_size, c_dim]
-
         self.lowres = lowres
         self.lowres_size = image_size // lowres
         self.lowres_shape = [self.lowres_size, self.lowres_size, c_dim]
-
         self.z_dim = z_dim
-
         self.gf_dim = gf_dim
         self.df_dim = df_dim
-
         self.gfc_dim = gfc_dim
         self.dfc_dim = dfc_dim
-
-        self.lam = lam
-
+        self.lamda = lamda
         self.c_dim = c_dim
 
         # batch normalization : deals with poor initialization helps gradient flow
@@ -86,9 +79,12 @@ class DCGAN(object):
         self.is_training = tf.placeholder(tf.bool, name='is_training')
         self.images = tf.placeholder(
             tf.float32, [None] + self.image_shape, name='real_images')
+
+        # 2x4 calculates mean of pixels!
         self.lowres_images = tf.reduce_mean(tf.reshape(self.images,
             [self.batch_size, self.lowres_size, self.lowres,
              self.lowres_size, self.lowres, self.c_dim]), [2, 4])
+        # initial distribution that G(z) uses
         self.z = tf.placeholder(tf.float32, [None, self.z_dim], name='z')
         self.z_sum = tf.summary.histogram("z", self.z)
 
@@ -139,7 +135,7 @@ class DCGAN(object):
             tf.contrib.layers.flatten(
                 tf.abs(tf.multiply(self.lowres_mask, self.lowres_G) - tf.multiply(self.lowres_mask, self.lowres_images))), 1)
         self.perceptual_loss = self.g_loss
-        self.complete_loss = self.contextual_loss + self.lam*self.perceptual_loss
+        self.complete_loss = self.contextual_loss + self.lamda*self.perceptual_loss
         self.grad_complete_loss = tf.gradients(self.complete_loss, self.z)
 
     def train(self, config):
@@ -150,7 +146,7 @@ class DCGAN(object):
         d_optim = tf.train.AdamOptimizer(config.learning_rate, beta1=config.beta1) \
                           .minimize(self.d_loss, var_list=self.d_vars)
         g_optim = tf.train.AdamOptimizer(config.learning_rate, beta1=config.beta1) \
-                          .minimize(self.g_loss, var_list=self.g_vars)                
+                          .minimize(self.g_loss, var_list=self.g_vars)
         try:
             tf.global_variables_initializer().run()
         except:
@@ -175,12 +171,7 @@ class DCGAN(object):
             print("""
 
 ======
-An existing model was found in the checkpoint directory.
-If you just cloned this repository, it's a model for faces
-trained on the CelebA dataset for 20 epochs.
-If you want to train a new model from scratch,
-delete the checkpoint directory or specify a different
---checkpoint_dir argument.
+An existing model was found in the checkpoint directory
 ======
 
 """)
@@ -199,12 +190,12 @@ Initializing a new one.
             batch_idxs = min(len(data), config.train_size) // self.batch_size
 
             for idx in xrange(0, batch_idxs):
-                batch_files = data[idx*config.batch_size:(idx+1)*config.batch_size]
+                batch_files = data[idx*self.batch_size:(idx+1)*self.batch_size]
                 batch = [get_image(batch_file, self.image_size, is_crop=self.is_crop)
                          for batch_file in batch_files]
                 batch_images = np.array(batch).astype(np.float32)
 
-                batch_z = np.random.uniform(-1, 1, [config.batch_size, self.z_dim]) \
+                batch_z = np.random.uniform(-1, 1, [self.batch_size, self.z_dim]) \
                             .astype(np.float32)
 
                 # Update D network
@@ -227,10 +218,10 @@ Initializing a new one.
                 errG = self.g_loss.eval({self.z: batch_z, self.is_training: False})
 
                 counter += 1
-                print("Epoch: [{:2d}] [{:4d}/{:4d}] time: {:4.4f}, d_loss: {:.8f}, g_loss: {:.8f}".format(
+                print("Epoch: [{:2d}] [{:4d}/{:4d}] seconds running: {:4.4f}, Discriminator_loss: {:.8f}, Generator_loss: {:.8f}".format(
                     epoch, idx, batch_idxs, time.time() - start_time, errD_fake+errD_real, errG))
 
-                if np.mod(counter, 100) == 1:
+                if np.mod(counter, 1000) == 1:
                     samples, d_loss, g_loss = self.sess.run(
                         [self.G, self.d_loss, self.g_loss],
                         feed_dict={self.z: sample_z, self.images: sample_images, self.is_training: False}
@@ -261,9 +252,9 @@ Initializing a new one.
         isLoaded = self.load(self.checkpoint_dir)
         assert(isLoaded)
 
-        nImgs = len(config.imgs)
+        number_of_images = len(config.imgs)
 
-        batch_idxs = int(np.ceil(nImgs/self.batch_size))
+        batch_idxs = int(np.ceil(number_of_images/self.batch_size))
         lowres_mask = np.zeros(self.lowres_shape)
         if config.maskType == 'random':
             fraction_masked = 0.2
@@ -293,14 +284,14 @@ Initializing a new one.
 
         for idx in xrange(0, batch_idxs):
             l = idx*self.batch_size
-            u = min((idx+1)*self.batch_size, nImgs)
+            u = min((idx+1)*self.batch_size, number_of_images)
             batchSz = u-l
             batch_files = config.imgs[l:u]
             batch = [get_image(batch_file, self.image_size, is_crop=self.is_crop)
                      for batch_file in batch_files]
             batch_images = np.array(batch).astype(np.float32)
             if batchSz < self.batch_size:
-                print(batchSz)
+                print(batchSz, " is the current batch size")
                 padSz = ((0, int(self.batch_size-batchSz)), (0,0), (0,0), (0,0))
                 batch_images = np.pad(batch_images, padSz, 'constant')
                 batch_images = batch_images.astype(np.float32)
@@ -346,7 +337,7 @@ Initializing a new one.
                         np.savetxt(f, zhats[img:img+1])
 
                 if i % config.outInterval == 0:
-                    print(i, np.mean(loss[0:batchSz]))
+                    print("Losses: ", i, np.mean(loss[0:batchSz]))
                     imgName = os.path.join(config.outDir,
                                            'hats_imgs/{:04d}.png'.format(i))
                     nRows = np.ceil(batchSz/8)
@@ -406,19 +397,19 @@ Initializing a new one.
             if reuse:
                 scope.reuse_variables()
 
-            # TODO: Investigate how to parameterise discriminator based off image size.
+            # Discriminator is four convolutional layers (RELU activation)
             h0 = lrelu(conv2d(image, self.df_dim, name='d_h0_conv'))
             h1 = lrelu(self.d_bns[0](conv2d(h0, self.df_dim*2, name='d_h1_conv'), self.is_training))
             h2 = lrelu(self.d_bns[1](conv2d(h1, self.df_dim*4, name='d_h2_conv'), self.is_training))
             h3 = lrelu(self.d_bns[2](conv2d(h2, self.df_dim*8, name='d_h3_conv'), self.is_training))
             h4 = linear(tf.reshape(h3, [-1, 8192]), 1, 'd_h4_lin')
-    
+
             return tf.nn.sigmoid(h4), h4
 
     def generator(self, z):
         with tf.variable_scope("generator") as scope:
             self.z_, self.h0_w, self.h0_b = linear(z, self.gf_dim*8*4*4, 'g_h0_lin', with_w=True)
-    
+
             # TODO: Nicer iteration pattern here. #readability
             hs = [None]
             hs[0] = tf.reshape(self.z_, [-1, 4, 4, self.gf_dim * 8])
@@ -443,7 +434,7 @@ Initializing a new one.
             name = 'g_h{}'.format(i)
             hs[i], _, _ = conv2d_transpose(hs[i - 1],
                 [self.batch_size, size, size, 3], name=name, with_w=True)
-    
+
             return tf.nn.tanh(hs[i])
 
     def save(self, checkpoint_dir, step):
@@ -455,7 +446,7 @@ Initializing a new one.
                         global_step=step)
 
     def load(self, checkpoint_dir):
-        print(" [*] Reading checkpoints...")
+        print(" [*] Checking to see if checkpoints exist!!!...")
 
         ckpt = tf.train.get_checkpoint_state(checkpoint_dir)
         if ckpt and ckpt.model_checkpoint_path:
