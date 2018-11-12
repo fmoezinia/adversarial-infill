@@ -71,12 +71,12 @@ class DCGAN(object):
             batch_norm(name='g_bn{}'.format(i,)) for i in range(log_size)]
 
         self.checkpoint_dir = checkpoint_dir
-        self.build_model()
+        self.setup()
 
         self.model_name = "DCGAN.model"
 
-    def build_model(self):
-        self.is_training = tf.placeholder(tf.bool, name='is_training')
+    def setup(self):
+        self.training_bool = tf.placeholder(tf.bool, name='training_bool')
         self.images = tf.placeholder(
             tf.float32, [None] + self.image_shape, name='real_images')
 
@@ -84,25 +84,32 @@ class DCGAN(object):
         self.lowres_images = tf.reduce_mean(tf.reshape(self.images,
             [self.batch_size, self.lowres_size, self.lowres,
              self.lowres_size, self.lowres, self.c_dim]), [2, 4])
+
         # initial distribution that G(z) uses
         self.z = tf.placeholder(tf.float32, [None, self.z_dim], name='z')
         self.z_sum = tf.summary.histogram("z", self.z)
 
+        #intialize instance of generator + lowres generator for contextual loss calculation
         self.G = self.generator(self.z)
         self.lowres_G = tf.reduce_mean(tf.reshape(self.G,
             [self.batch_size, self.lowres_size, self.lowres,
              self.lowres_size, self.lowres, self.c_dim]), [2, 4])
-        self.D, self.D_logits = self.discriminator(self.images)
 
+        #need two discriminators, one for batches of images from our training data, one for
+        #batches of images outputted by gen
+        self.D, self.D_logits = self.discriminator(self.images)
         self.D_, self.D_logits_ = self.discriminator(self.G, reuse=True)
 
         self.d_sum = tf.summary.histogram("d", self.D)
         self.d__sum = tf.summary.histogram("d_", self.D_)
         self.G_sum = tf.summary.image("G", self.G)
 
+        #discriminator loss for training data: cross entropy btwn discriminator pred and all ones (bc real)
         self.d_loss_real = tf.reduce_mean(
             tf.nn.sigmoid_cross_entropy_with_logits(logits=self.D_logits,
                                                     labels=tf.ones_like(self.D)))
+        
+        #discriminator loss for generator outputs: cross entropy btwn discriminator pred and all zeros (bc fake)
         self.d_loss_fake = tf.reduce_mean(
             tf.nn.sigmoid_cross_entropy_with_logits(logits=self.D_logits_,
                                                     labels=tf.zeros_like(self.D_)))
@@ -110,9 +117,12 @@ class DCGAN(object):
             tf.nn.sigmoid_cross_entropy_with_logits(logits=self.D_logits_,
                                                     labels=tf.ones_like(self.D_)))
 
+        #generator loss: cross entropy between discriminator and all ones (want to fool discriminator
+        #into thinking its outputs are real)
         self.d_loss_real_sum = tf.summary.scalar("d_loss_real", self.d_loss_real)
         self.d_loss_fake_sum = tf.summary.scalar("d_loss_fake", self.d_loss_fake)
 
+        #sum discriminator losses
         self.d_loss = self.d_loss_real + self.d_loss_fake
 
         self.g_loss_sum = tf.summary.scalar("g_loss", self.g_loss)
@@ -125,17 +135,27 @@ class DCGAN(object):
 
         self.saver = tf.train.Saver(max_to_keep=1)
 
-        # Completion.
+        #completion variable shtuff
+
+        #mask to be completed (1s and 0s in shape of image)
         self.mask = tf.placeholder(tf.float32, self.image_shape, name='mask')
         self.lowres_mask = tf.placeholder(tf.float32, self.lowres_shape, name='lowres_mask')
+        
+        #define contextual loss as pixel difference between mask * generator output and mask * image to infill
+        #as suggested by GAN implementations, add on same pixel difference for low res versions to include "bigger picture"
         self.contextual_loss = tf.reduce_sum(
             tf.contrib.layers.flatten(
                 tf.abs(tf.multiply(self.mask, self.G) - tf.multiply(self.mask, self.images))), 1)
         self.contextual_loss += tf.reduce_sum(
             tf.contrib.layers.flatten(
                 tf.abs(tf.multiply(self.lowres_mask, self.lowres_G) - tf.multiply(self.lowres_mask, self.lowres_images))), 1)
+        
+        #to make sure we don't pick a G(z) that just doesn't look realistic, include perceptual loss (same loss as generator)
+        #can be thought of as ensuring this G(z) fools the discriminator
         self.perceptual_loss = self.g_loss
         self.complete_loss = self.contextual_loss + self.lamda*self.perceptual_loss
+        
+        #we will minimize loss function L = c + wp using gradient descent
         self.grad_complete_loss = tf.gradients(self.complete_loss, self.z)
 
     def train(self, config):
@@ -143,6 +163,7 @@ class DCGAN(object):
         np.random.shuffle(data)
         assert(len(data) > 0)
 
+        #optimizing parameters
         d_optim = tf.train.AdamOptimizer(config.learning_rate, beta1=config.beta1) \
                           .minimize(self.d_loss, var_list=self.d_vars)
         g_optim = tf.train.AdamOptimizer(config.learning_rate, beta1=config.beta1) \
@@ -168,23 +189,11 @@ class DCGAN(object):
         start_time = time.time()
 
         if self.load(self.checkpoint_dir):
-            print("""
-
-======
-An existing model was found in the checkpoint directory
-======
-
-""")
+            print("========using existing model!!!============")
         else:
-            print("""
+            print("========no checkpoint, initing new model!!!===========")
 
-======
-An existing model was not found in the checkpoint directory.
-Initializing a new one.
-======
-
-""")
-
+        #go through each epoch, sample some images and run optimizers to update network
         for epoch in xrange(config.epoch):
             data = dataset_files(config.dataset)
             batch_idxs = min(len(data), config.train_size) // self.batch_size
@@ -200,22 +209,22 @@ Initializing a new one.
 
                 # Update D network
                 _, summary_str = self.sess.run([d_optim, self.d_sum],
-                    feed_dict={ self.images: batch_images, self.z: batch_z, self.is_training: True })
+                    feed_dict={ self.images: batch_images, self.z: batch_z, self.training_bool: True })
                 self.writer.add_summary(summary_str, counter)
 
                 # Update G network
                 _, summary_str = self.sess.run([g_optim, self.g_sum],
-                    feed_dict={ self.z: batch_z, self.is_training: True })
+                    feed_dict={ self.z: batch_z, self.training_bool: True })
                 self.writer.add_summary(summary_str, counter)
 
                 # Run g_optim twice to make sure that d_loss does not go to zero (different from paper)
                 _, summary_str = self.sess.run([g_optim, self.g_sum],
-                    feed_dict={ self.z: batch_z, self.is_training: True })
+                    feed_dict={ self.z: batch_z, self.training_bool: True })
                 self.writer.add_summary(summary_str, counter)
 
-                errD_fake = self.d_loss_fake.eval({self.z: batch_z, self.is_training: False})
-                errD_real = self.d_loss_real.eval({self.images: batch_images, self.is_training: False})
-                errG = self.g_loss.eval({self.z: batch_z, self.is_training: False})
+                errD_fake = self.d_loss_fake.eval({self.z: batch_z, self.training_bool: False})
+                errD_real = self.d_loss_real.eval({self.images: batch_images, self.training_bool: False})
+                errG = self.g_loss.eval({self.z: batch_z, self.training_bool: False})
 
                 counter += 1
                 print("Epoch: [{:2d}] [{:4d}/{:4d}] seconds running: {:4.4f}, Discriminator_loss: {:.8f}, Generator_loss: {:.8f}".format(
@@ -224,7 +233,7 @@ Initializing a new one.
                 if np.mod(counter, 1000) == 1:
                     samples, d_loss, g_loss = self.sess.run(
                         [self.G, self.d_loss, self.g_loss],
-                        feed_dict={self.z: sample_z, self.images: sample_images, self.is_training: False}
+                        feed_dict={self.z: sample_z, self.images: sample_images, self.training_bool: False}
                     )
                     save_images(samples, [8, 8],
                                 './samples/train_{:02d}_{:04d}.png'.format(epoch, idx))
@@ -326,7 +335,7 @@ Initializing a new one.
                     self.mask: mask,
                     self.lowres_mask: lowres_mask,
                     self.images: batch_images,
-                    self.is_training: False
+                    self.training_bool: False
                 }
                 run = [self.complete_loss, self.grad_complete_loss, self.G, self.lowres_G]
                 loss, g, G_imgs, lowres_G_imgs = self.sess.run(run, feed_dict=fd)
@@ -399,9 +408,9 @@ Initializing a new one.
 
             # Discriminator is four convolutional layers (RELU activation)
             h0 = lrelu(conv2d(image, self.df_dim, name='d_h0_conv'))
-            h1 = lrelu(self.d_bns[0](conv2d(h0, self.df_dim*2, name='d_h1_conv'), self.is_training))
-            h2 = lrelu(self.d_bns[1](conv2d(h1, self.df_dim*4, name='d_h2_conv'), self.is_training))
-            h3 = lrelu(self.d_bns[2](conv2d(h2, self.df_dim*8, name='d_h3_conv'), self.is_training))
+            h1 = lrelu(self.d_bns[0](conv2d(h0, self.df_dim*2, name='d_h1_conv'), self.training_bool))
+            h2 = lrelu(self.d_bns[1](conv2d(h1, self.df_dim*4, name='d_h2_conv'), self.training_bool))
+            h3 = lrelu(self.d_bns[2](conv2d(h2, self.df_dim*8, name='d_h3_conv'), self.training_bool))
             h4 = linear(tf.reshape(h3, [-1, 8192]), 1, 'd_h4_lin')
 
             return tf.nn.sigmoid(h4), h4
@@ -413,7 +422,7 @@ Initializing a new one.
             # TODO: Nicer iteration pattern here. #readability
             hs = [None]
             hs[0] = tf.reshape(self.z_, [-1, 4, 4, self.gf_dim * 8])
-            hs[0] = tf.nn.relu(self.g_bns[0](hs[0], self.is_training))
+            hs[0] = tf.nn.relu(self.g_bns[0](hs[0], self.training_bool))
 
             i = 1 # Iteration number.
             depth_mul = 8  # Depth decreases as spatial component increases.
@@ -424,7 +433,7 @@ Initializing a new one.
                 name = 'g_h{}'.format(i)
                 hs[i], _, _ = conv2d_transpose(hs[i-1],
                     [self.batch_size, size, size, self.gf_dim*depth_mul], name=name, with_w=True)
-                hs[i] = tf.nn.relu(self.g_bns[i](hs[i], self.is_training))
+                hs[i] = tf.nn.relu(self.g_bns[i](hs[i], self.training_bool))
 
                 i += 1
                 depth_mul //= 2

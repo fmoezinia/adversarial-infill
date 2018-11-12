@@ -31,7 +31,7 @@ flags.DEFINE_integer("df_dim", 64, "First Conv Layer Discriminator Dimension") #
 flags.DEFINE_integer("gfc_dim", 1024, "First FC Layer Generator Dimension")
 flags.DEFINE_integer("dfc_dim", 1024, "First FC Layer Discriminator Dimension")
 flags.DEFINE_integer("c_dim", 3, "Colour Dimension") # RGB
-flags.DEFINE_string("dataset", "your-dataset/aligned", "Dataset directory.")
+flags.DEFINE_string("dataset", "data/your-dataset/aligned", "Dataset directory.")
 flags.DEFINE_string("checkpoint_dir", "checkpoint", "Directory name to save the checkpoints [checkpoint]")
 flags.DEFINE_string("sample_dir", "samples", "Directory name to save the image samples [samples]")
 
