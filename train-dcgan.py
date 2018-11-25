@@ -33,7 +33,7 @@ flags.DEFINE_integer("df_dim", 64, "First Conv Layer Discriminator Dimension") #
 flags.DEFINE_integer("gfc_dim", 1024, "First FC Layer Generator Dimension")
 flags.DEFINE_integer("dfc_dim", 1024, "First FC Layer Discriminator Dimension")
 flags.DEFINE_integer("c_dim", 3, "Colour Dimension") # RGB
-flags.DEFINE_string("dataset", "/pool001/moeziniq/project/data/your-dataset/aligned", "Dataset directory.")
+flags.DEFINE_string("dataset", "/pool001/moeziniq/project/data/celeb_a/aligned", "Dataset directory.")
 flags.DEFINE_string("checkpoint_dir", "checkpoint", "Directory name to save the checkpoints [checkpoint]")
 flags.DEFINE_string("sample_dir", "samples", "Directory name to save the image samples [samples]")
 
@@ -46,7 +46,6 @@ if not os.path.exists(FLAGS.sample_dir):
 
 config = tf.ConfigProto()
 config.gpu_options.allow_growth = True
-print("========DEFAULT TRAINING PARAMS SETUP============")
 with tf.Session(config=config) as sess:
     dcgan = DCGAN(sess,
                   image_size=FLAGS.image_size,

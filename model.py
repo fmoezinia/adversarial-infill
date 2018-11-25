@@ -376,31 +376,8 @@ class DCGAN(object):
                     v_hat = v / (1 - config.beta2 ** (i + 1))
                     zhats += - np.true_divide(config.lr * m_hat, (np.sqrt(v_hat) + config.eps))
                     zhats = np.clip(zhats, -1, 1)
-
-                elif config.approach == 'hmc':
-                    # Sample example completions with HMC (not in paper)
-                    zhats_old = np.copy(zhats)
-                    loss_old = np.copy(loss)
-                    v = np.random.randn(self.batch_size, self.z_dim)
-                    v_old = np.copy(v)
-
-                    for steps in range(config.hmcL):
-                        v -= config.hmcEps/2 * config.hmcBeta * g[0]
-                        zhats += config.hmcEps * v
-                        np.copyto(zhats, np.clip(zhats, -1, 1))
-                        loss, g, _, _ = self.sess.run(run, feed_dict=fd)
-                        v -= config.hmcEps/2 * config.hmcBeta * g[0]
-
-                    for img in range(batchSz):
-                        logprob_old = config.hmcBeta * loss_old[img] + np.sum(v_old[img]**2)/2
-                        logprob = config.hmcBeta * loss[img] + np.sum(v[img]**2)/2
-                        accept = np.exp(logprob_old - logprob)
-                        if accept < 1 and np.random.uniform() > accept:
-                            np.copyto(zhats[img], zhats_old[img])
-
-                    config.hmcBeta *= config.hmcAnneal
-
                 else:
+                    # wrong default value
                     assert(False)
 
     def discriminator(self, image, reuse=False):
