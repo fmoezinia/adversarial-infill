@@ -39,7 +39,8 @@ class DCGAN(object):
                  dfc_dim=1024,
                  c_dim=3,
                  checkpoint_dir=None,
-                 lamda=0.01):
+                 lamda=0.01,
+                 center_scale=0.25):
 
         # Currently, image size must be a (power of 2) and (8 or higher).
         assert(image_size & (image_size - 1) == 0 and image_size >= 8)
@@ -61,6 +62,7 @@ class DCGAN(object):
         self.dfc_dim = dfc_dim
         self.lamda = lamda
         self.c_dim = c_dim
+        self.center_scale = center_scale
 
         # batch normalization : deals with poor initialization helps gradient flow
         self.d_bns = [
@@ -115,6 +117,8 @@ class DCGAN(object):
         self.d_loss_fake = tf.reduce_mean(
             tf.nn.sigmoid_cross_entropy_with_logits(logits=self.D_logits_,
                                                     labels=tf.zeros_like(self.D_)))
+
+        # generator loss wants D to be wrong! and D says all real!
         self.g_loss = tf.reduce_mean(
             tf.nn.sigmoid_cross_entropy_with_logits(logits=self.D_logits_,
                                                     labels=tf.ones_like(self.D_)))
@@ -144,19 +148,36 @@ class DCGAN(object):
         self.lowres_mask = tf.placeholder(tf.float32, self.lowres_shape, name='lowres_mask')
 
         #define contextual loss as pixel difference between mask * generator output and mask * image to infill
-        #as suggested by GAN implementations, add on same pixel difference for low res versions to include "bigger picture"
         self.contextual_loss = tf.reduce_sum(
             tf.contrib.layers.flatten(
                 tf.abs(tf.multiply(self.mask, self.G) - tf.multiply(self.mask, self.images))), 1)
+
+        #as suggested by GAN implementations, add on same pixel difference for low res versions to include "bigger picture"
         self.contextual_loss += tf.reduce_sum(
             tf.contrib.layers.flatten(
                 tf.abs(tf.multiply(self.lowres_mask, self.lowres_G) - tf.multiply(self.lowres_mask, self.lowres_images))), 1)
+
+        # try and make loss function to help smooth the mask boundary
+        # TODO only works for center mask
+        self.smoothing_loss = 0
+        # maybe take abs of two cut outs...
+
+        # take G(z) the pixels in the outer part inside the mask
+        l = int(self.image_size*self.center_scale)
+        u = int(self.image_size*(1.0-self.center_scale))
+
+        self.inside_gz = tf.contrib.layers.flatten(self.G[l:u, l+1, :] + self.G[u, l:u, :] + self.G[l:u, u-1, :] + self.G[l, l:u, :])
+        print(self.inside_gz)
+        print(self.inside_gz.shape)
+        print(self.images.shape, " is the shape")
+        # print(len(self.images))
+        for image in self.images:
+            outer_img = image[l:u, l+1, :] + self.G[u, l:u, :] + self.G[l:u, u-1, :] + self.G[l, l:u, :]
 
         #to make sure we don't pick a G(z) that just doesn't look realistic, include perceptual loss (same loss as generator)
         #can be thought of as ensuring this G(z) fools the discriminator
         self.perceptual_loss = self.g_loss
         self.complete_loss = self.contextual_loss + self.lamda*self.perceptual_loss
-
         #we will minimize loss function L = c + wp using gradient descent
         self.grad_complete_loss = tf.gradients(self.complete_loss, self.z)
 
@@ -264,32 +285,33 @@ class DCGAN(object):
         assert(isLoaded)
 
         number_of_images = len(config.imgs)
+        lowres_mask = np.zeros(self.lowres_shape)
 
         batch_idxs = int(np.ceil(number_of_images/self.batch_size))
-        lowres_mask = np.zeros(self.lowres_shape)
         if config.maskType == 'random':
             fraction_masked = 0.2
             mask = np.ones(self.image_shape)
             mask[np.random.random(self.image_shape[:2]) < fraction_masked] = 0.0
         elif config.maskType == 'center':
             assert(config.centerScale <= 0.5)
+
+            # change centerScale to make diff size
             mask = np.ones(self.image_shape)
-            sz = self.image_size
             l = int(self.image_size*config.centerScale)
             u = int(self.image_size*(1.0-config.centerScale))
             mask[l:u, l:u, :] = 0.0
-        elif config.maskType == 'left':
-            mask = np.ones(self.image_shape)
-            c = self.image_size // 2
-            mask[:,:c,:] = 0.0
-        elif config.maskType == 'full':
-            mask = np.ones(self.image_shape)
-        elif config.maskType == 'grid':
-            mask = np.zeros(self.image_shape)
-            mask[::4,::4,:] = 1.0
-        elif config.maskType == 'lowres':
-            lowres_mask = np.ones(self.lowres_shape)
-            mask = np.zeros(self.image_shape)
+        # elif config.maskType == 'left':
+        #     mask = np.ones(self.image_shape)
+        #     c = self.image_size // 2
+        #     mask[:,:c,:] = 0.0
+        # elif config.maskType == 'full':
+        #     mask = np.ones(self.image_shape)
+        # elif config.maskType == 'grid':
+        #     mask = np.zeros(self.image_shape)
+        #     mask[::4,::4,:] = 1.0
+        # elif config.maskType == 'lowres':
+        #     lowres_mask = np.ones(self.lowres_shape)
+        #     mask = np.zeros(self.image_shape)
         else:
             assert(False)
 
@@ -302,34 +324,36 @@ class DCGAN(object):
                      for batch_file in batch_files]
             batch_images = np.array(batch).astype(np.float32)
             if batchSz < self.batch_size:
-                print(batchSz, " is the current batch size")
                 padSz = ((0, int(self.batch_size-batchSz)), (0,0), (0,0), (0,0))
                 batch_images = np.pad(batch_images, padSz, 'constant')
                 batch_images = batch_images.astype(np.float32)
 
-            zhats = np.random.uniform(-1, 1, size=(self.batch_size, self.z_dim))
-            m = 0
-            v = 0
-
             nRows = np.ceil(batchSz/8)
             nCols = min(8, batchSz)
-            save_images(batch_images[:batchSz,:,:,:], [nRows,nCols],
-                        os.path.join(config.outDir, 'before.png'))
+
+            # mask!
             masked_images = np.multiply(batch_images, mask)
             save_images(masked_images[:batchSz,:,:,:], [nRows,nCols],
                         os.path.join(config.outDir, 'masked.png'))
-            if lowres_mask.any():
-                lowres_images = np.reshape(batch_images, [self.batch_size, self.lowres_size, self.lowres,
-                    self.lowres_size, self.lowres, self.c_dim]).mean(4).mean(2)
-                lowres_images = np.multiply(lowres_images, lowres_mask)
-                lowres_images = np.repeat(np.repeat(lowres_images, self.lowres, 1), self.lowres, 2)
-                save_images(lowres_images[:batchSz,:,:,:], [nRows,nCols],
-                            os.path.join(config.outDir, 'lowres.png'))
-            for img in range(batchSz):
-                with open(os.path.join(config.outDir, 'logs/hats_{:02d}.log'.format(img)), 'a') as f:
-                    f.write('iter loss ' +
-                            ' '.join(['z{}'.format(zi) for zi in range(self.z_dim)]) +
-                            '\n')
+            save_images(batch_images[:batchSz,:,:,:], [nRows,nCols],
+                        os.path.join(config.outDir, 'before.png'))
+
+            # if lowres_mask.any():
+            #     lowres_images = np.reshape(batch_images, [self.batch_size, self.lowres_size, self.lowres,
+            #         self.lowres_size, self.lowres, self.c_dim]).mean(4).mean(2)
+            #     lowres_images = np.multiply(lowres_images, lowres_mask)
+            #     lowres_images = np.repeat(np.repeat(lowres_images, self.lowres, 1), self.lowres, 2)
+            #     save_images(lowres_images[:batchSz,:,:,:], [nRows,nCols],
+            #                 os.path.join(config.outDir, 'lowres.png'))
+            # for img in range(batchSz):
+            #     with open(os.path.join(config.outDir, 'logs/hats_{:02d}.log'.format(img)), 'a') as f:
+            #         f.write('iter loss ' +
+            #                 ' '.join(['z{}'.format(zi) for zi in range(self.z_dim)]) +
+            #                 '\n')
+
+            zhats = np.random.uniform(-1, 1, size=(self.batch_size, self.z_dim))
+            m = 0
+            v = 0
 
             for i in xrange(config.nIter):
                 fd = {
@@ -342,10 +366,10 @@ class DCGAN(object):
                 run = [self.complete_loss, self.grad_complete_loss, self.G, self.lowres_G]
                 loss, g, G_imgs, lowres_G_imgs = self.sess.run(run, feed_dict=fd)
 
-                for img in range(batchSz):
-                    with open(os.path.join(config.outDir, 'logs/hats_{:02d}.log'.format(img)), 'ab') as f:
-                        f.write('{} {} '.format(i, loss[img]).encode())
-                        np.savetxt(f, zhats[img:img+1])
+                # for img in range(batchSz):
+                #     with open(os.path.join(config.outDir, 'logs/hats_{:02d}.log'.format(img)), 'ab') as f:
+                #         f.write('{} {} '.format(i, loss[img]).encode())
+                #         np.savetxt(f, zhats[img:img+1])
 
                 if i % config.outInterval == 0:
                     print("Losses: ", i, np.mean(loss[0:batchSz]))
@@ -354,11 +378,11 @@ class DCGAN(object):
                     nRows = np.ceil(batchSz/8)
                     nCols = min(8, batchSz)
                     save_images(G_imgs[:batchSz,:,:,:], [nRows,nCols], imgName)
-                    if lowres_mask.any():
-                        imgName = imgName[:-4] + '.lowres.png'
-                        save_images(np.repeat(np.repeat(lowres_G_imgs[:batchSz,:,:,:],
-                                              self.lowres, 1), self.lowres, 2),
-                                    [nRows,nCols], imgName)
+                    # if lowres_mask.any():
+                    #     imgName = imgName[:-4] + '.lowres.png'
+                    #     save_images(np.repeat(np.repeat(lowres_G_imgs[:batchSz,:,:,:],
+                    #                           self.lowres, 1), self.lowres, 2),
+                    #                 [nRows,nCols], imgName)
 
                     inv_masked_hat_images = np.multiply(G_imgs, 1.0-mask)
                     completed = masked_images + inv_masked_hat_images
@@ -376,6 +400,7 @@ class DCGAN(object):
                     v_hat = v / (1 - config.beta2 ** (i + 1))
                     zhats += - np.true_divide(config.lr * m_hat, (np.sqrt(v_hat) + config.eps))
                     zhats = np.clip(zhats, -1, 1)
+                    print(len(zhats), ' Is the zhat')
                 else:
                     # wrong default value
                     assert(False)
