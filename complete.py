@@ -25,7 +25,7 @@ parser.add_argument('--hmcAnneal', type=float, default=1)
 parser.add_argument('--nIter', type=int, default=1000)
 parser.add_argument('--imgSize', type=int, default=64)
 parser.add_argument('--lamda', type=float, default=0.1)
-parser.add_argument('--checkpointDir', type=str, default='checkpoint')
+parser.add_argument('--checkpointDir', type=str, default='/pool001/moeziniq/project/checkpoint')
 parser.add_argument('--outDir', type=str, default='completions')
 parser.add_argument('--outInterval', type=int, default=50)
 parser.add_argument('--maskType', type=str,
