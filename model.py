@@ -159,26 +159,37 @@ class DCGAN(object):
 
         # try and make loss function to help smooth the mask boundary
         # TODO only works for center mask
-        self.smoothing_loss = 0
         # maybe take abs of two cut outs...
 
+
+        generated_inner_borderline = np.zeros(self.image_shape).astype(np.float32)
         # take G(z) the pixels in the outer part inside the mask
         l = int(self.image_size*self.center_scale)
         u = int(self.image_size*(1.0-self.center_scale))
+        generated_inner_borderline[l, l:u, :] = 1.0
+        generated_inner_borderline[l:u, u-1, :] = 1.0
+        generated_inner_borderline[u-1, l:u, :] = 1.0
+        generated_inner_borderline[l:u, l, :] = 1.0
 
-        self.inside_gz = tf.contrib.layers.flatten(self.G[l:u, l+1, :] + self.G[u, l:u, :] + self.G[l:u, u-1, :] + self.G[l, l:u, :])
-        print(self.inside_gz)
-        print(self.inside_gz.shape)
-        print(self.images.shape, " is the shape")
-        # print(len(self.images))
-        for image in self.images:
-            outer_img = image[l:u, l+1, :] + self.G[u, l:u, :] + self.G[l:u, u-1, :] + self.G[l, l:u, :]
+        masked_image_outerborder = np.zeros(self.image_shape).astype(np.float32)
+        masked_image_outerborder[l-1, l:u, :] = 1.0
+        masked_image_outerborder[l:u, u, :] = 1.0
+        masked_image_outerborder[u, l:u, :] = 1.0
+        masked_image_outerborder[l:u, l-1, :] = 1.0
+
+        # print(tf.abs(tf.multiply(generated_inner_borderline, self.G)))
+        # print(tf.abs(tf.multiply(masked_image_outerborder, self.images)))
+
+        self.smoothing_loss = tf.reduce_sum(
+            tf.contrib.layers.flatten(
+                tf.abs(tf.multiply(generated_inner_borderline, self.G) - tf.multiply(masked_image_outerborder, self.images))), 1)
+
 
         #to make sure we don't pick a G(z) that just doesn't look realistic, include perceptual loss (same loss as generator)
         #can be thought of as ensuring this G(z) fools the discriminator
         self.perceptual_loss = self.g_loss
-        self.complete_loss = self.contextual_loss + self.lamda*self.perceptual_loss
-        #we will minimize loss function L = c + wp using gradient descent
+        self.complete_loss = self.contextual_loss + self.lamda*self.perceptual_loss + self.smoothing_loss
+        #we will minimize loss function L = c + wz using gradient descent
         self.grad_complete_loss = tf.gradients(self.complete_loss, self.z)
 
     def train(self, config):
@@ -400,7 +411,6 @@ class DCGAN(object):
                     v_hat = v / (1 - config.beta2 ** (i + 1))
                     zhats += - np.true_divide(config.lr * m_hat, (np.sqrt(v_hat) + config.eps))
                     zhats = np.clip(zhats, -1, 1)
-                    print(len(zhats), ' Is the zhat')
                 else:
                     # wrong default value
                     assert(False)
