@@ -26,8 +26,8 @@ parser.add_argument('--nIter', type=int, default=1000)
 parser.add_argument('--imgSize', type=int, default=64)
 parser.add_argument('--lamda', type=float, default=0.1)
 parser.add_argument('--checkpointDir', type=str, default='/pool001/moeziniq/project/checkpoint')
-parser.add_argument('--outDir', type=str, default='completions')
-parser.add_argument('--outInterval', type=int, default=50)
+parser.add_argument('--outDir', type=str, default='post_completed_pics')
+parser.add_argument('--outInterval', type=int, default=100)
 parser.add_argument('--maskType', type=str,
                     choices=['random', 'center', 'left', 'full', 'grid', 'lowres'],
                     default='center')

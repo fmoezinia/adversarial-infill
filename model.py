@@ -157,19 +157,26 @@ class DCGAN(object):
             tf.contrib.layers.flatten(
                 tf.abs(tf.multiply(self.lowres_mask, self.lowres_G) - tf.multiply(self.lowres_mask, self.lowres_images))), 1)
 
-        # try and make loss function to help smooth the mask boundary
+        # improve loss function to help smooth the mask boundary
         # TODO only works for center mask
-        # maybe take abs of two cut outs...
 
-
-        generated_inner_borderline = np.zeros(self.image_shape).astype(np.float32)
-        # take G(z) the pixels in the outer part inside the mask
         l = int(self.image_size*self.center_scale)
         u = int(self.image_size*(1.0-self.center_scale))
+
+        # take G(z) the pixels in the outer part inside the mask
+        generated_inner_borderline = np.zeros(self.image_shape).astype(np.float32)
+
         generated_inner_borderline[l, l:u, :] = 1.0
         generated_inner_borderline[l:u, u-1, :] = 1.0
         generated_inner_borderline[u-1, l:u, :] = 1.0
         generated_inner_borderline[l:u, l, :] = 1.0
+
+        # take a second cut out inside the mask
+        second_inner_borderline = np.zeros(self.image_shape).astype(np.float32)
+        second_inner_borderline[l+1, l:u, :] = 1.0
+        second_inner_borderline[l:u, u-2, :] = 1.0
+        second_inner_borderline[u-2, l:u, :] = 1.0
+        second_inner_borderline[l:u, l+1, :] = 1.0
 
         masked_image_outerborder = np.zeros(self.image_shape).astype(np.float32)
         masked_image_outerborder[l-1, l:u, :] = 1.0
@@ -184,6 +191,9 @@ class DCGAN(object):
             tf.contrib.layers.flatten(
                 tf.abs(tf.multiply(generated_inner_borderline, self.G) - tf.multiply(masked_image_outerborder, self.images))), 1)
 
+        self.smoothing_loss += tf.reduce_sum(
+            tf.contrib.layers.flatten(
+                tf.abs(tf.multiply(second_inner_borderline, self.G) - tf.multiply(masked_image_outerborder, self.images))), 1)
 
         #to make sure we don't pick a G(z) that just doesn't look realistic, include perceptual loss (same loss as generator)
         #can be thought of as ensuring this G(z) fools the discriminator
@@ -300,7 +310,7 @@ class DCGAN(object):
 
         batch_idxs = int(np.ceil(number_of_images/self.batch_size))
         if config.maskType == 'random':
-            fraction_masked = 0.2
+            fraction_masked = 0.8
             mask = np.ones(self.image_shape)
             mask[np.random.random(self.image_shape[:2]) < fraction_masked] = 0.0
         elif config.maskType == 'center':
