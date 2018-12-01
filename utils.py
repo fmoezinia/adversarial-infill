@@ -19,6 +19,17 @@ pp = pprint.PrettyPrinter()
 
 get_stddev = lambda x, k_h, k_w: 1/math.sqrt(k_w*k_h*x.get_shape()[-1])
 
+def get_neighbours(row_index, col_index, mask):
+    weight_sum = 0
+    for j in range(row_index-4, row_index+4):
+        for i in range(col_index-4, col_index+4):
+            try:
+                if mask[j][i] = [0, 0, 0]:
+                    weight_sum += 0.5
+    return weight_sum
+
+
+
 def get_image(image_path, image_size, is_crop=True):
     return transform(imread(image_path), image_size, is_crop)
 

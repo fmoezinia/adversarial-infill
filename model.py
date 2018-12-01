@@ -15,7 +15,7 @@ from six.moves import xrange
 import numpy as np
 
 from ops import batch_norm, conv2d, conv2d_transpose, lrelu, linear
-from utils import get_image, save_images
+from utils import get_image, save_images, get_neighbours
 
 SUPPORTED_EXTENSIONS = ["png", "jpg", "jpeg"]
 
@@ -147,10 +147,24 @@ class DCGAN(object):
         self.mask = tf.placeholder(tf.float32, self.image_shape, name='mask')
         self.lowres_mask = tf.placeholder(tf.float32, self.lowres_shape, name='lowres_mask')
 
+
+
+        weighted_contextual_loss = np.zeros(self.image_shape).astype(np.float32)
+        weighted_contextual_loss = np.full(self.image_shape, 0.5)
+        # self.image_shape = [image_size, image_size, c_dim]
+        for row_index in range(self.image_shape[0]):
+            for col_index in range(self.image_shape[1]):
+                # make masked
+                if self.mask[row_index][col_index] == [0, 0, 0]:
+                    weighted_contextual_loss[row_index][col_index] = [0.0, 0.0, 0.0]
+                else: # not masked, if near mask then > 0.5 weight
+                    weight = get_neighbours(row_index, col_index, self.mask)
+                    weighted_contextual_loss[row_index][col_index] += [weight, weight, weight]
+
         #define contextual loss as pixel difference between mask * generator output and mask * image to infill
         self.contextual_loss = tf.reduce_sum(
             tf.contrib.layers.flatten(
-                tf.abs(tf.multiply(self.mask, self.G) - tf.multiply(self.mask, self.images))), 1)
+                tf.abs(tf.multiply(weighted_contextual_loss(tf.multiply(self.mask, self.G) - tf.multiply(self.mask, self.images)))), 1)
 
         #as suggested by GAN implementations, add on same pixel difference for low res versions to include "bigger picture"
         self.contextual_loss += tf.reduce_sum(
@@ -198,7 +212,7 @@ class DCGAN(object):
         #to make sure we don't pick a G(z) that just doesn't look realistic, include perceptual loss (same loss as generator)
         #can be thought of as ensuring this G(z) fools the discriminator
         self.perceptual_loss = self.g_loss
-        self.complete_loss = self.contextual_loss + self.lamda*self.perceptual_loss + self.blending_loss
+        self.complete_loss = self.contextual_loss + self.lamda*self.perceptual_loss + (3*self.blending_loss)
         #we will minimize loss function L = c + wz using gradient descent
         self.grad_complete_loss = tf.gradients(self.complete_loss, self.z)
 
