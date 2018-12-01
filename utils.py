@@ -24,11 +24,11 @@ def get_neighbours(row_index, col_index, mask):
     for j in range(row_index-4, row_index+4):
         for i in range(col_index-4, col_index+4):
             try:
-                if mask[j][i] = [0, 0, 0]:
+                if mask[j][i] == [0, 0, 0]:
                     weight_sum += 0.5
+            except:
+                continue
     return weight_sum
-
-
 
 def get_image(image_path, image_size, is_crop=True):
     return transform(imread(image_path), image_size, is_crop)

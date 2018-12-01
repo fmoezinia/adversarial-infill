@@ -149,22 +149,21 @@ class DCGAN(object):
 
 
 
-        weighted_contextual_loss = np.zeros(self.image_shape).astype(np.float32)
-        weighted_contextual_loss = np.full(self.image_shape, 0.5)
-        # self.image_shape = [image_size, image_size, c_dim]
+        self.weighted_contextual_loss = np.zeros(self.image_shape).astype(np.float32)
+        self.weighted_contextual_loss = np.full(self.image_shape, 0.5)
         for row_index in range(self.image_shape[0]):
             for col_index in range(self.image_shape[1]):
                 # make masked
                 if self.mask[row_index][col_index] == [0, 0, 0]:
-                    weighted_contextual_loss[row_index][col_index] = [0.0, 0.0, 0.0]
-                else: # not masked, if near mask then > 0.5 weight
+                    self.weighted_contextual_loss[row_index][col_index] = [0.0, 0.0, 0.0]
+                else: # not masked, if near mask then > 0.5 weight, add 0.5 for every closeby
                     weight = get_neighbours(row_index, col_index, self.mask)
-                    weighted_contextual_loss[row_index][col_index] += [weight, weight, weight]
+                    self.weighted_contextual_loss[row_index][col_index] += [weight, weight, weight]
 
         #define contextual loss as pixel difference between mask * generator output and mask * image to infill
         self.contextual_loss = tf.reduce_sum(
             tf.contrib.layers.flatten(
-                tf.abs(tf.multiply(weighted_contextual_loss(tf.multiply(self.mask, self.G) - tf.multiply(self.mask, self.images)))), 1)
+                tf.abs(tf.multiply(weighted_contextual_loss(tf.multiply(self.mask, self.G) - tf.multiply(self.mask, self.images)))), 1))
 
         #as suggested by GAN implementations, add on same pixel difference for low res versions to include "bigger picture"
         self.contextual_loss += tf.reduce_sum(
