@@ -187,18 +187,18 @@ class DCGAN(object):
         # print(tf.abs(tf.multiply(generated_inner_borderline, self.G)))
         # print(tf.abs(tf.multiply(masked_image_outerborder, self.images)))
 
-        self.smoothing_loss = tf.reduce_sum(
+        self.blending_loss = tf.reduce_sum(
             tf.contrib.layers.flatten(
                 tf.abs(tf.multiply(generated_inner_borderline, self.G) - tf.multiply(masked_image_outerborder, self.images))), 1)
 
-        self.smoothing_loss += tf.reduce_sum(
+        self.blending_loss += tf.reduce_sum(
             tf.contrib.layers.flatten(
                 tf.abs(tf.multiply(second_inner_borderline, self.G) - tf.multiply(masked_image_outerborder, self.images))), 1)
 
         #to make sure we don't pick a G(z) that just doesn't look realistic, include perceptual loss (same loss as generator)
         #can be thought of as ensuring this G(z) fools the discriminator
         self.perceptual_loss = self.g_loss
-        self.complete_loss = self.contextual_loss + self.lamda*self.perceptual_loss + self.smoothing_loss
+        self.complete_loss = self.contextual_loss + self.lamda*self.perceptual_loss + self.blending_loss
         #we will minimize loss function L = c + wz using gradient descent
         self.grad_complete_loss = tf.gradients(self.complete_loss, self.z)
 
