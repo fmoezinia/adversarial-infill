@@ -204,24 +204,28 @@ class DCGAN(object):
 
     def train(self, config):
         data = dataset_files(config.dataset)
-        np.random.shuffle(data)
         assert(len(data) > 0)
+        np.random.shuffle(data)
+
 
         #optimizing parameters
-        d_optim = tf.train.AdamOptimizer(config.learning_rate, beta1=config.beta1) \
+        optimizing_discriminator = tf.train.AdamOptimizer(config.learning_rate, beta1=config.beta1) \
                           .minimize(self.d_loss, var_list=self.d_vars)
-        g_optim = tf.train.AdamOptimizer(config.learning_rate, beta1=config.beta1) \
+        optimizing_generator = tf.train.AdamOptimizer(config.learning_rate, beta1=config.beta1) \
                           .minimize(self.g_loss, var_list=self.g_vars)
+
+        # get tf vars
         try:
             tf.global_variables_initializer().run()
         except:
             tf.initialize_all_variables().run()
 
+
         self.g_sum = tf.summary.merge(
             [self.z_sum, self.d__sum, self.G_sum, self.d_loss_fake_sum, self.g_loss_sum])
         self.d_sum = tf.summary.merge(
             [self.z_sum, self.d_sum, self.d_loss_real_sum, self.d_loss_sum])
-        self.writer = tf.summary.FileWriter("./logs", self.sess.graph)
+        self.file_writer = tf.summary.FileWriter("./logs", self.sess.graph)
 
         sample_z = np.random.uniform(-1, 1, size=(self.sample_size , self.z_dim))
         sample_files = data[0:self.sample_size]
@@ -240,9 +244,9 @@ class DCGAN(object):
         #go through each epoch, sample some images and run optimizers to update network
         for epoch in xrange(config.epoch):
             data = dataset_files(config.dataset)
-            batch_idxs = min(len(data), config.train_size) // self.batch_size
+            batch_ids = min(len(data), config.train_size) // self.batch_size
 
-            for idx in xrange(0, batch_idxs):
+            for idx in xrange(0, batch_ids):
                 batch_files = data[idx*self.batch_size:(idx+1)*self.batch_size]
                 batch = [get_image(batch_file, self.image_size, is_crop=self.is_crop)
                          for batch_file in batch_files]
@@ -252,19 +256,19 @@ class DCGAN(object):
                             .astype(np.float32)
 
                 # Update D network
-                _, summary_str = self.sess.run([d_optim, self.d_sum],
+                _, summary_str = self.sess.run([optimizing_discriminator, self.d_sum],
                     feed_dict={ self.images: batch_images, self.z: batch_z, self.training_bool: True })
-                self.writer.add_summary(summary_str, counter)
+                self.file_writer.add_summary(summary_str, counter)
 
                 # Update G network
-                _, summary_str = self.sess.run([g_optim, self.g_sum],
+                _, summary_str = self.sess.run([optimizing_generator, self.g_sum],
                     feed_dict={ self.z: batch_z, self.training_bool: True })
-                self.writer.add_summary(summary_str, counter)
+                self.file_writer.add_summary(summary_str, counter)
 
-                # Run g_optim twice to make sure that d_loss does not go to zero (different from paper)
-                _, summary_str = self.sess.run([g_optim, self.g_sum],
+                # Run optimizing_generator twice to make sure that d_loss does not go to zero (different from paper)
+                _, summary_str = self.sess.run([optimizing_generator, self.g_sum],
                     feed_dict={ self.z: batch_z, self.training_bool: True })
-                self.writer.add_summary(summary_str, counter)
+                self.file_writer.add_summary(summary_str, counter)
 
                 errD_fake = self.d_loss_fake.eval({self.z: batch_z, self.training_bool: False})
                 errD_real = self.d_loss_real.eval({self.images: batch_images, self.training_bool: False})
@@ -272,7 +276,7 @@ class DCGAN(object):
 
                 counter += 1
                 print("Epoch: [{:2d}] [{:4d}/{:4d}] seconds running: {:4.4f}, Discriminator_loss: {:.8f}, Generator_loss: {:.8f}".format(
-                    epoch, idx, batch_idxs, time.time() - start_time, errD_fake+errD_real, errG))
+                    epoch, idx, batch_ids, time.time() - start_time, errD_fake+errD_real, errG))
 
                 if np.mod(counter, 1000) == 1:
                     samples, d_loss, g_loss = self.sess.run(
@@ -308,7 +312,8 @@ class DCGAN(object):
         number_of_images = len(config.imgs)
         lowres_mask = np.zeros(self.lowres_shape)
 
-        batch_idxs = int(np.ceil(number_of_images/self.batch_size))
+        batch_ids = int(np.ceil(number_of_images/self.batch_size))
+
         if config.maskType == 'random':
             fraction_masked = 0.8
             mask = np.ones(self.image_shape)
@@ -318,9 +323,9 @@ class DCGAN(object):
 
             # change centerScale to make diff size
             mask = np.ones(self.image_shape)
-            l = int(self.image_size*config.centerScale)
-            u = int(self.image_size*(1.0-config.centerScale))
-            mask[l:u, l:u, :] = 0.0
+            lower_mask = int(self.image_size*config.centerScale)
+            upper_mask = int(self.image_size*(1.0-config.centerScale))
+            mask[lower_mask:upper_mask, lower_mask:upper_mask, :] = 0.0
         # elif config.maskType == 'left':
         #     mask = np.ones(self.image_shape)
         #     c = self.image_size // 2
@@ -336,46 +341,35 @@ class DCGAN(object):
         else:
             assert(False)
 
-        for idx in xrange(0, batch_idxs):
-            l = idx*self.batch_size
-            u = min((idx+1)*self.batch_size, number_of_images)
-            batchSz = u-l
-            batch_files = config.imgs[l:u]
+        for idx in xrange(0, batch_ids):
+            first_batch_id = idx*self.batch_size
+            last_batch_id = min((idx+1)*self.batch_size, number_of_images)
+            cur_batch_size = last_batch_id-first_batch_id
+            batch_files = config.imgs[first_batch_id:last_batch_id]
             batch = [get_image(batch_file, self.image_size, is_crop=self.is_crop)
                      for batch_file in batch_files]
             batch_images = np.array(batch).astype(np.float32)
-            if batchSz < self.batch_size:
-                padSz = ((0, int(self.batch_size-batchSz)), (0,0), (0,0), (0,0))
+            if cur_batch_size < self.batch_size:
+                padSz = ((0, int(self.batch_size-cur_batch_size)), (0,0), (0,0), (0,0))
                 batch_images = np.pad(batch_images, padSz, 'constant')
                 batch_images = batch_images.astype(np.float32)
 
-            nRows = np.ceil(batchSz/8)
-            nCols = min(8, batchSz)
+            number_of_rows = np.ceil(cur_batch_size/8)
+            number_of_cols = min(8, cur_batch_size)
 
             # mask!
             masked_images = np.multiply(batch_images, mask)
-            save_images(masked_images[:batchSz,:,:,:], [nRows,nCols],
+            save_images(masked_images[:cur_batch_size,:,:,:], [number_of_rows, number_of_cols],
                         os.path.join(config.outDir, 'masked.png'))
-            save_images(batch_images[:batchSz,:,:,:], [nRows,nCols],
+            save_images(batch_images[:cur_batch_size,:,:,:], [number_of_rows, number_of_cols],
                         os.path.join(config.outDir, 'before.png'))
 
-            # if lowres_mask.any():
-            #     lowres_images = np.reshape(batch_images, [self.batch_size, self.lowres_size, self.lowres,
-            #         self.lowres_size, self.lowres, self.c_dim]).mean(4).mean(2)
-            #     lowres_images = np.multiply(lowres_images, lowres_mask)
-            #     lowres_images = np.repeat(np.repeat(lowres_images, self.lowres, 1), self.lowres, 2)
-            #     save_images(lowres_images[:batchSz,:,:,:], [nRows,nCols],
-            #                 os.path.join(config.outDir, 'lowres.png'))
-            # for img in range(batchSz):
-            #     with open(os.path.join(config.outDir, 'logs/hats_{:02d}.log'.format(img)), 'a') as f:
-            #         f.write('iter loss ' +
-            #                 ' '.join(['z{}'.format(zi) for zi in range(self.z_dim)]) +
-            #                 '\n')
-
+            # setting up standard ADAM optimization!
             zhats = np.random.uniform(-1, 1, size=(self.batch_size, self.z_dim))
             m = 0
             v = 0
 
+            # number of Adam optimizations! (niter ~= 3000)
             for i in xrange(config.nIter):
                 fd = {
                     self.z: zhats,
@@ -387,29 +381,20 @@ class DCGAN(object):
                 run = [self.complete_loss, self.grad_complete_loss, self.G, self.lowres_G]
                 loss, g, G_imgs, lowres_G_imgs = self.sess.run(run, feed_dict=fd)
 
-                # for img in range(batchSz):
-                #     with open(os.path.join(config.outDir, 'logs/hats_{:02d}.log'.format(img)), 'ab') as f:
-                #         f.write('{} {} '.format(i, loss[img]).encode())
-                #         np.savetxt(f, zhats[img:img+1])
-
+                # Save image, print Losses every outInterval steps
                 if i % config.outInterval == 0:
-                    print("Losses: ", i, np.mean(loss[0:batchSz]))
+                    print("Losses: ", i, np.mean(loss[0:cur_batch_size]))
                     imgName = os.path.join(config.outDir,
                                            'hats_imgs/{:04d}.png'.format(i))
-                    nRows = np.ceil(batchSz/8)
-                    nCols = min(8, batchSz)
-                    save_images(G_imgs[:batchSz,:,:,:], [nRows,nCols], imgName)
-                    # if lowres_mask.any():
-                    #     imgName = imgName[:-4] + '.lowres.png'
-                    #     save_images(np.repeat(np.repeat(lowres_G_imgs[:batchSz,:,:,:],
-                    #                           self.lowres, 1), self.lowres, 2),
-                    #                 [nRows,nCols], imgName)
+                    number_of_rows = np.ceil(cur_batch_size/8)
+                    number_of_cols = min(8, cur_batch_size)
+                    save_images(G_imgs[:cur_batch_size,:,:,:], [number_of_rows,number_of_cols], imgName)
 
                     inv_masked_hat_images = np.multiply(G_imgs, 1.0-mask)
                     completed = masked_images + inv_masked_hat_images
                     imgName = os.path.join(config.outDir,
                                            'completed/{:04d}.png'.format(i))
-                    save_images(completed[:batchSz,:,:,:], [nRows,nCols], imgName)
+                    save_images(completed[:cur_batch_size,:,:,:], [number_of_rows,number_of_cols], imgName)
 
                 if config.approach == 'adam':
                     # Optimize single completion with Adam
@@ -431,13 +416,13 @@ class DCGAN(object):
                 scope.reuse_variables()
 
             # Discriminator is four convolutional layers (RELU activation)
-            h0 = lrelu(conv2d(image, self.df_dim, name='d_h0_conv'))
-            h1 = lrelu(self.d_bns[0](conv2d(h0, self.df_dim*2, name='d_h1_conv'), self.training_bool))
-            h2 = lrelu(self.d_bns[1](conv2d(h1, self.df_dim*4, name='d_h2_conv'), self.training_bool))
-            h3 = lrelu(self.d_bns[2](conv2d(h2, self.df_dim*8, name='d_h3_conv'), self.training_bool))
-            h4 = linear(tf.reshape(h3, [-1, 8192]), 1, 'd_h4_lin')
+            hidden_layer_0 = lrelu(conv2d(image, self.df_dim, name='d_h0_conv'))
+            hidden_layer_1 = lrelu(self.d_bns[0](conv2d(hidden_layer_0, self.df_dim*2, name='d_h1_conv'), self.training_bool))
+            hidden_layer_2 = lrelu(self.d_bns[1](conv2d(hidden_layer_1, self.df_dim*4, name='d_h2_conv'), self.training_bool))
+            hidden_layer_3 = lrelu(self.d_bns[2](conv2d(hidden_layer_2, self.df_dim*8, name='d_h3_conv'), self.training_bool))
+            hidden_layer_4 = linear(tf.reshape(hidden_layer_3, [-1, 8192]), 1, 'd_h4_lin') # 64*64*2
 
-            return tf.nn.sigmoid(h4), h4
+            return tf.nn.sigmoid(hidden_layer_4), hidden_layer_4
 
     def generator(self, z):
         with tf.variable_scope("generator") as scope:
@@ -452,6 +437,7 @@ class DCGAN(object):
             depth_mul = 8  # Depth decreases as spatial component increases.
             size = 8  # Size increases as depth decreases.
 
+            # 4 convolutional layers as well..for 64x64
             while size < self.image_size:
                 hs.append(None)
                 name = 'g_h{}'.format(i)
