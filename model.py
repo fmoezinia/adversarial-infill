@@ -21,8 +21,7 @@ SUPPORTED_EXTENSIONS = ["png", "jpg", "jpeg"]
 
 def dataset_files(root):
     """Returns a list of all image files in the given directory"""
-    return list(itertools.chain.from_iterable(
-        glob(os.path.join(root, "*.{}".format(ext))) for ext in SUPPORTED_EXTENSIONS))
+    return list(itertools.chain.from_iterable(glob(os.path.join(root, "*.{}".format(ext))) for ext in SUPPORTED_EXTENSIONS))
 
 
 class DCGAN(object):
@@ -89,20 +88,25 @@ class DCGAN(object):
             [self.batch_size, self.lowres_size, self.lowres,
              self.lowres_size, self.lowres, self.c_dim]), [2, 4])
 
+
+        # Attributes for CGAN
+        self.attr_dim = 40
+        self.attr = tf.placeholder(tf.float32, shape=[None, self.attr_dim])
+
         # initial distribution that G(z) uses
         self.z = tf.placeholder(tf.float32, [None, self.z_dim], name='z')
         self.z_sum = tf.summary.histogram("z", self.z)
 
         #intialize instance of generator + lowres generator for contextual loss calculation
-        self.G = self.generator(self.z)
+        self.G = self.generator(self.z, self.attr)
         self.lowres_G = tf.reduce_mean(tf.reshape(self.G,
             [self.batch_size, self.lowres_size, self.lowres,
              self.lowres_size, self.lowres, self.c_dim]), [2, 4])
 
         #need two discriminators, one for batches of images from our training data, one for
         #batches of images outputted by gen
-        self.D, self.D_logits = self.discriminator(self.images)
-        self.D_, self.D_logits_ = self.discriminator(self.G, reuse=True)
+        self.D, self.D_logits = self.discriminator(self.images, self.attr)
+        self.D_, self.D_logits_ = self.discriminator(self.G, self.attr, reuse=True)
 
         self.d_sum = tf.summary.histogram("d", self.D)
         self.d__sum = tf.summary.histogram("d_", self.D_)
@@ -202,6 +206,13 @@ class DCGAN(object):
         #we will minimize loss function L = c + wz using gradient descent
         self.grad_complete_loss = tf.gradients(self.complete_loss, self.z)
 
+    def extract_line(self, img_number):
+        with open("list_attr_celeba.csv", "r") as f:
+            attrs = list(f)[img]
+            raw_atts = attrs.split(",")
+            attrs = [int(i) for i in raw_atts[1:]]
+            return attrs
+
     def train(self, config):
         data = dataset_files(config.dataset)
         assert(len(data) > 0)
@@ -248,12 +259,19 @@ class DCGAN(object):
 
             for idx in xrange(0, batch_ids):
                 batch_files = data[idx*self.batch_size:(idx+1)*self.batch_size]
+                print(batch_files, "alexis")
+                # get file names
+
+                # get associated attrs
+
                 batch = [get_image(batch_file, self.image_size, is_crop=self.is_crop)
                          for batch_file in batch_files]
                 batch_images = np.array(batch).astype(np.float32)
 
                 batch_z = np.random.uniform(-1, 1, [self.batch_size, self.z_dim]) \
                             .astype(np.float32)
+
+
 
                 # Update D network
                 _, summary_str = self.sess.run([optimizing_discriminator, self.d_sum],
@@ -410,51 +428,62 @@ class DCGAN(object):
                     # wrong default value
                     assert(False)
 
-    def discriminator(self, image, reuse=False):
+    def discriminator(self, image, attributes, reuse=False):
         with tf.variable_scope("discriminator") as scope:
             if reuse:
                 scope.reuse_variables()
 
+            input = tf.concat(values=[image, attributes], axis=1)
+
+            inputs = tf.concat(concat_dim=1, values=[x, y])
+
+            D_h1 = tf.nn.relu(tf.matmul(inputs, D_W1) + D_b1)
+            D_logit = tf.matmul(D_h1, D_W2) + D_b2
+            D_prob = tf.nn.sigmoid(D_logit)
+
+            return D_prob, D_logit
             # Discriminator is four convolutional layers (RELU activation)
-            hidden_layer_0 = lrelu(conv2d(image, self.df_dim, name='d_h0_conv'))
-            hidden_layer_1 = lrelu(self.d_bns[0](conv2d(hidden_layer_0, self.df_dim*2, name='d_h1_conv'), self.training_bool))
-            hidden_layer_2 = lrelu(self.d_bns[1](conv2d(hidden_layer_1, self.df_dim*4, name='d_h2_conv'), self.training_bool))
-            hidden_layer_3 = lrelu(self.d_bns[2](conv2d(hidden_layer_2, self.df_dim*8, name='d_h3_conv'), self.training_bool))
-            hidden_layer_4 = linear(tf.reshape(hidden_layer_3, [-1, 8192]), 1, 'd_h4_lin') # 64*64*2
+            # hidden_layer_0 = lrelu(conv2d(input, (self.df_dim + self.attr_dim), name='d_h0_conv'))
+            # hidden_layer_1 = lrelu(self.d_bns[0](conv2d(hidden_layer_0, ((self.df_dim+self.attr_dim)*2), name='d_h1_conv'), self.training_bool))
+            # hidden_layer_2 = lrelu(self.d_bns[1](conv2d(hidden_layer_1, ((self.df_dim+self.attr_dim)*4), name='d_h2_conv'), self.training_bool))
+            # hidden_layer_3 = lrelu(self.d_bns[2](conv2d(hidden_layer_2, ((self.df_dim+self.attr_dim)*8), name='d_h3_conv'), self.training_bool))
+            # hidden_layer_4 = linear(tf.reshape(hidden_layer_3, [-1]), 1, 'd_h4_lin') # 64*64*2
+            # return tf.nn.sigmoid(hidden_layer_4), hidden_layer_4
 
-            return tf.nn.sigmoid(hidden_layer_4), hidden_layer_4
-
-    def generator(self, z):
+    def generator(self, z, attributes):
         with tf.variable_scope("generator") as scope:
-            self.z_, self.h0_w, self.h0_b = linear(z, self.gf_dim*8*4*4, 'g_h0_lin', with_w=True)
+            # 13,312
+            input = tf.concat(values=[z, attributes], axis=1)
 
-            # TODO: Nicer iteration pattern here. #readability
-            hs = [None]
-            hs[0] = tf.reshape(self.z_, [-1, 4, 4, self.gf_dim * 8])
-            hs[0] = tf.nn.relu(self.g_bns[0](hs[0], self.training_bool))
-
-            i = 1 # Iteration number.
-            depth_mul = 8  # Depth decreases as spatial component increases.
-            size = 8  # Size increases as depth decreases.
-
-            # 4 convolutional layers as well..for 64x64
-            while size < self.image_size:
-                hs.append(None)
-                name = 'g_h{}'.format(i)
-                hs[i], _, _ = conv2d_transpose(hs[i-1],
-                    [self.batch_size, size, size, self.gf_dim*depth_mul], name=name, with_w=True)
-                hs[i] = tf.nn.relu(self.g_bns[i](hs[i], self.training_bool))
-
-                i += 1
-                depth_mul //= 2
-                size *= 2
-
-            hs.append(None)
-            name = 'g_h{}'.format(i)
-            hs[i], _, _ = conv2d_transpose(hs[i - 1],
-                [self.batch_size, size, size, 3], name=name, with_w=True)
-
-            return tf.nn.tanh(hs[i])
+            # self.z_, _, _ = linear(input, (self.gf_dim+self.attr_dim)*8*4*4, 'g_h0_lin', with_w=True)
+            #
+            # # TODO: Nicer iteration pattern here. #readability
+            # hs = [None]
+            # hs[0] = tf.reshape(self.z_, [-1, 4, 4, ((self.gf_dim+self.attr_dim)* 8)])
+            # hs[0] = tf.nn.relu(self.g_bns[0](hs[0], self.training_bool))
+            #
+            # i = 1 # Iteration number.
+            # depth_mul = 8  # Depth decreases as spatial component increases.
+            # size = 8  # Size increases as depth decreases.
+            #
+            # # 4 convolutional layers as well..for 64x64
+            # while size < self.image_size:
+            #     hs.append(None)
+            #     name = 'g_h{}'.format(i)
+            #     hs[i], _, _ = conv2d_transpose(hs[i-1],
+            #         [self.batch_size, size, size, ((self.gf_dim+self.attr_dim)*depth_mul)], name=name, with_w=True)
+            #     hs[i] = tf.nn.relu(self.g_bns[i](hs[i], self.training_bool))
+            #
+            #     i += 1
+            #     depth_mul //= 2
+            #     size *= 2
+            #
+            # hs.append(None)
+            # name = 'g_h{}'.format(i)
+            # hs[i], _, _ = conv2d_transpose(hs[i - 1],
+            #     [self.batch_size, size, size, 3], name=name, with_w=True)
+            #
+            # return tf.nn.tanh(hs[i])
 
     def save(self, checkpoint_dir, step):
         if not os.path.exists(checkpoint_dir):
